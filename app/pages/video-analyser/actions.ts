@@ -1,5 +1,5 @@
 'use server';
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Array of API keys
 const API_KEYS = [
@@ -36,75 +36,48 @@ export async function detectEvents(
   const API_KEY = getNextApiKey();
   console.log(`Using API key index: ${currentKeyIndex}`);
 
-  const prompt = `Analyze this frame and determine if any of these specific dangerous situations are occurring:
-1. Medical Emergencies:
-- Person unconscious or lying motionless
-- Person clutching chest/showing signs of heart problems
-- Seizures or convulsions
-- Difficulty breathing or choking
-2. Falls and Injuries:
-- Person falling or about to fall
-- Person on the ground after a fall
-- Signs of injury or bleeding
-- Limping or showing signs of physical trauma
-3. Distress Signals:
-- Person calling for help or showing distress
-- Panic attacks or severe anxiety symptoms
-- Signs of fainting or dizziness
-- Headache or unease
-- Signs of unconsciousness
-4. Violence or Threats:
-- Physical altercations
-- Threatening behavior
-- Weapons visible
-5. Suspicious Activities:
-- Shoplifting
-- Vandalism
-- Trespassing
-Return a JSON object in this exact format:
-{
-    "events": [
-        {
-            "timestamp": "mm:ss",
-            "description": "Brief description of what's happening in this frame",
-            "isDangerous": true/false // Set to true if the event involves a fall, injury, unease, pain, accident, or concerning behavior
-        }
-    ]
-}`;
-
   const genAI = new GoogleGenerativeAI(API_KEY);
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
-    safetySettings: [
-      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    ],
-    generationConfig: {
-      temperature: 0,
-      topP: 0.1,
-      topK: 16,
-      maxOutputTokens: 300,
-    },
-  });
-  console.log('Initialized Gemini model with generationConfig');
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
   const bytes = new Uint8Array(await imageBlob.arrayBuffer());
   console.log(`Image size in bytes: ${bytes.length}`);
 
-  const imagePart = {
-    inlineData: {
-      data: Buffer.from(bytes).toString('base64'),
-      mimeType: 'image/jpeg',
+  const base64Image = Buffer.from(bytes).toString('base64');
+
+  // Wait for API response - no timeout, just wait until resolved
+  const result = await model.generateContent([
+    {
+      inlineData: {
+        mimeType: 'image/jpeg',
+        data: base64Image,
+      },
     },
-  };
+    `Analyze this frame in detail and describe what you see. ALWAYS provide at least one event describing the scene.
 
-  const result = await model.generateContent([prompt, imagePart]);
-  const response = await result.response;
-  const text = await response.text();
-  console.log('Raw API Response:', text);
+Check for dangerous situations:
+1. Medical emergencies, falls, injuries
+2. Distress signals, panic
+3. Violence, threats, weapons
+4. Suspicious activities
 
+Return EXACTLY this JSON format (MUST have at least one event):
+{
+  "events": [
+    {
+      "timestamp": "00:00",
+      "description": "very short Detailed description of what's visible in the frame (not more than 150 characters)",
+      "isDangerous": true/false
+    }
+  ]
+}
+
+IMPORTANT: Even if nothing dangerous is happening, describe what you see (e.g., "Person standing normally", "Empty room", "Outdoor scene with trees", etc.)`,
+  ]);
+
+  const text = result.response.text();
+  console.log('Gemini says:', text);
+
+  // Parse JSON response
   let jsonStr = text;
   const codeMatch = text.match(/```(?:json)?\s*({[\s\S]*?})\s*```/);
   if (codeMatch) {
@@ -114,13 +87,39 @@ Return a JSON object in this exact format:
     if (objMatch) jsonStr = objMatch[0];
   }
 
-  const parsed = JSON.parse(jsonStr);
-  const events = parsed.events ?? [];
-  const eventsWithTimestamps: VideoEvent[] = events.map((e: any) => ({
-    description: e.description,
-    isDangerous: e.isDangerous,
-    timestamp: '',
-  }));
+  try {
+    const parsed = JSON.parse(jsonStr);
+    const events = parsed.events ?? [];
 
-  return { events: eventsWithTimestamps, rawResponse: text };
+    // If no events returned, create a default one with the raw text
+    if (events.length === 0) {
+      return {
+        events: [{
+          description: text,
+          isDangerous: false,
+          timestamp: '',
+        }],
+        rawResponse: text,
+      };
+    }
+
+    const eventsWithTimestamps: VideoEvent[] = events.map((e: any) => ({
+      description: e.description || text,
+      isDangerous: e.isDangerous || false,
+      timestamp: '',
+    }));
+
+    return { events: eventsWithTimestamps, rawResponse: text };
+  } catch (error) {
+    console.error('Failed to parse JSON, returning raw text:', error);
+    // If JSON parsing fails, return the raw text as description
+    return {
+      events: [{
+        description: text,
+        isDangerous: false,
+        timestamp: '',
+      }],
+      rawResponse: text,
+    };
+  }
 }

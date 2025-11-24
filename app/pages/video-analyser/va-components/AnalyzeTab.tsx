@@ -34,11 +34,18 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({ onError, onWatchUrlChang
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [streamKey, setStreamKey] = useState(0);
+  const [isWaitingForResponse, setIsWaitingForResponse] = useState<boolean>(false);
 
   const { playSound, stopSound } = useDangerSound('/danger_alert.mp3');
 
   const captureAndAnalyzeFrame = useCallback(async () => {
     if (!imgRef.current || !canvasRef.current || !isAnalyzing) return;
+
+    // Skip if still waiting for previous response
+    if (isWaitingForResponse) {
+      console.log('Skipping frame analysis - still waiting for previous response');
+      return;
+    }
 
     const img = imgRef.current;
     const canvas = canvasRef.current;
@@ -66,25 +73,41 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({ onError, onWatchUrlChang
       ctx.drawImage(img, 0, 0, newWidth, newHeight);
 
       setIsLoading(true);
+      setIsWaitingForResponse(true);
+
       canvas.toBlob(async (blob) => {
-        if (!blob) throw new Error('Failed to create image blob');
-        const { events: newEvents } = await detectEvents(blob);
-
-        const eventsWithTimestamp = newEvents.map((event) => ({
-          ...event,
-          timestamp: new Date().toLocaleTimeString('en-US', {
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-          }),
-        }));
-
-        if (eventsWithTimestamp.some((e) => e.isDangerous)) {
-          playSound();
+        if (!blob) {
+          setIsWaitingForResponse(false);
+          setIsLoading(false);
+          throw new Error('Failed to create image blob');
         }
 
-        setEvents((prev) => [...eventsWithTimestamp, ...prev].slice(0, 10));
-        setError(null);
-        onError(null);
-        setIsLoading(false);
+        try {
+          const { events: newEvents } = await detectEvents(blob);
+
+          const eventsWithTimestamp = newEvents.map((event) => ({
+            ...event,
+            timestamp: new Date().toLocaleTimeString('en-US', {
+              hour: '2-digit', minute: '2-digit', second: '2-digit',
+            }),
+          }));
+
+          if (eventsWithTimestamp.some((e) => e.isDangerous)) {
+            playSound();
+          }
+
+          setEvents((prev) => [...eventsWithTimestamp, ...prev].slice(0, 10));
+          setError(null);
+          onError(null);
+        } catch (err) {
+          console.error('Error analyzing frame:', err);
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          setError(`Failed to analyze frame: ${msg}`);
+          onError(`Failed to analyze frame: ${msg}`);
+        } finally {
+          setIsLoading(false);
+          setIsWaitingForResponse(false);
+        }
       }, 'image/jpeg', 0.6);
     } catch (err) {
       console.error('Error analyzing frame:', err);
@@ -92,8 +115,9 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({ onError, onWatchUrlChang
       setError(`Failed to analyze frame: ${msg}`);
       onError(`Failed to analyze frame: ${msg}`);
       setIsLoading(false);
+      setIsWaitingForResponse(false);
     }
-  }, [isAnalyzing, playSound, onError]);
+  }, [isAnalyzing, isWaitingForResponse, playSound, onError]);
 
   const startAnalysis = () => {
     if (!ipAddress) {
@@ -137,6 +161,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({ onError, onWatchUrlChang
 
   const stopAnalysis = () => {
     setIsAnalyzing(false);
+    setIsWaitingForResponse(false);
     stopSound();
     if (intervalRef.current) clearInterval(intervalRef.current);
   };
