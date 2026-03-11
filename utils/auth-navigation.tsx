@@ -16,13 +16,13 @@ export default function AuthNavigation() {
     const checkUser = async () => {
       try {
         const {
-          data: { user },
+          data: { session },
           error,
-        } = await supabase.auth.getUser();
+        } = await supabase.auth.getSession();
         if (error) {
           console.error('Error checking authentication:', error);
         }
-        setUser(user);
+        setUser(session?.user ?? null);
       } catch (err) {
         console.error('Failed to check auth:', err);
       } finally {

@@ -24,11 +24,11 @@ export default function ProtectedPage() {
     const checkAuth = async () => {
       try {
         const {
-          data: { user },
+          data: { session },
           error,
-        } = await supabase.auth.getUser();
+        } = await supabase.auth.getSession();
 
-        if (error || !user) {
+        if (error || !session) {
           router.push('/sign-in');
           return;
         }
